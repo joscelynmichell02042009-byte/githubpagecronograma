@@ -1,5 +1,8 @@
 (function(){
-  const STORAGE_KEY = 'gantt-tasks';
+  const SUPABASE_URL = 'https://ufmjbvidooasyirzatyv.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_3MXo0sSdigFF9B6OTnF2DA_9ZnZ36SV';
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
   const COLORS = ['#7C93B0','#5FA79A','#D3A24E','#B77FA6','#7FA07C','#C97B58','#6D80B0','#C97D8A'];
 
   let tasks = [];
@@ -17,8 +20,6 @@
   const ganttScroll = document.getElementById('ganttScroll');
   const statStrip = document.getElementById('statStrip');
 
-  function uid(){ return 't' + Math.random().toString(36).slice(2,9); }
-
   function parseDate(s){ const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d); }
   function fmtISO(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
   function daysBetween(a,b){ return Math.round((b-a)/86400000); }
@@ -30,19 +31,29 @@
 
   async function loadTasks(){
     try{
-      const res = await window.storage.get(STORAGE_KEY, false);
-      tasks = res && res.value ? JSON.parse(res.value) : [];
-    }catch(e){
-      tasks = [];
-    }
-    render();
-  }
+      const { data, error } = await supabase
+        .from('activities')
+        .select('*')
+        .order('start_date', { ascending: true });
 
-  async function saveTasks(){
-    try{
-      await window.storage.set(STORAGE_KEY, JSON.stringify(tasks), false);
+      if(error) throw error;
+
+      tasks = data.map(t => ({
+        id: t.id,
+        name: t.name,
+        start: t.start_date,
+        end: t.end_date,
+        assignee: t.assignee || '',
+        pct: t.progress_pct || 0,
+        color: t.color || COLORS[0]
+      }));
+
+      render();
     }catch(e){
-      formMsg.textContent = 'No se pudo guardar. Intenta de nuevo.';
+      console.error('Error cargando actividades:', e);
+      formMsg.textContent = 'No se pudieron cargar las actividades desde Supabase.';
+      tasks = [];
+      render();
     }
   }
 
@@ -55,7 +66,7 @@
     formMsg.textContent = '';
   }
 
-  form.addEventListener('submit', function(e){
+  form.addEventListener('submit', async function(e){
     e.preventDefault();
     formMsg.textContent = '';
     const name = fName.value.trim();
@@ -68,15 +79,41 @@
     if(isNaN(pct)) pct = 0;
     pct = Math.max(0, Math.min(100, Math.round(pct)));
 
-    if(editingId){
-      const t = tasks.find(x => x.id === editingId);
-      if(t){ t.name=name; t.start=start; t.end=end; t.assignee=assignee; t.pct=pct; }
-    } else {
-      tasks.push({ id: uid(), name, start, end, assignee, pct, color: COLORS[tasks.length % COLORS.length] });
+    try{
+      if(editingId){
+        const { error } = await supabase
+          .from('activities')
+          .update({
+            name: name,
+            start_date: start,
+            end_date: end,
+            assignee: assignee,
+            progress_pct: pct
+          })
+          .eq('id', editingId);
+
+        if(error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('activities')
+          .insert({
+            name: name,
+            start_date: start,
+            end_date: end,
+            assignee: assignee,
+            progress_pct: pct,
+            color: COLORS[tasks.length % COLORS.length]
+          });
+
+        if(error) throw error;
+      }
+
+      resetForm();
+      await loadTasks();
+    }catch(e){
+      console.error(e);
+      formMsg.textContent = 'No se pudo guardar la actividad.';
     }
-    saveTasks();
-    resetForm();
-    render();
   });
 
   cancelEditBtn.addEventListener('click', resetForm);
@@ -95,10 +132,20 @@
     fName.focus();
   }
 
-  function deleteTask(id){
-    tasks = tasks.filter(x => x.id !== id);
-    saveTasks();
-    render();
+  async function deleteTask(id){
+    try{
+      const { error } = await supabase
+        .from('activities')
+        .delete()
+        .eq('id', id);
+
+      if(error) throw error;
+
+      await loadTasks();
+    }catch(e){
+      console.error(e);
+      formMsg.textContent = 'No se pudo eliminar la actividad.';
+    }
   }
 
   function hexToRgba(hex, alpha){
@@ -138,7 +185,6 @@
     const dayWidth = totalDays > 90 ? 26 : (totalDays > 45 ? 32 : 40);
     const today = new Date(); today.setHours(0,0,0,0);
 
-    // Sidebar
     let sideHtml = '<div class="side-head">Actividad</div>';
     tasks.forEach(t => {
       sideHtml += '<div class="side-row">'+
@@ -156,7 +202,6 @@
       '</div>';
     });
 
-    // Month header
     let monthHtml = '';
     let cursor = new Date(rangeStart);
     while(cursor <= rangeEnd){
@@ -170,7 +215,6 @@
       cursor = scan;
     }
 
-    // Day header
     let dayHtml = '';
     cursor = new Date(rangeStart);
     while(cursor <= rangeEnd){
@@ -180,7 +224,6 @@
       cursor = addDays(cursor, 1);
     }
 
-    // Grid background row template (reused per row)
     let gridBgHtml = '';
     cursor = new Date(rangeStart);
     while(cursor <= rangeEnd){
